@@ -1,5 +1,6 @@
 # Cellinguist
-Language of the cell 
+Language of the cell
+
 *This is a work in progress*
 
 ## Pretraining
