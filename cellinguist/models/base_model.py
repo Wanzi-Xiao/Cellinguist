@@ -30,29 +30,39 @@ class TokenEmbeddingLayer(nn.Module):
         self.use_positional = use_positional
         if use_positional:
             self.positional_embeddings = nn.Embedding(max_seq_len, embedding_dim)
+        self.mix_layer = nn.Sequential(
+            nn.Linear(2 * embedding_dim, embedding_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.LayerNorm(embedding_dim)
+        )
     def forward(self, gene_ids: torch.Tensor, expression_tokens: torch.Tensor,
                 condition_tokens: torch.Tensor, library_size: torch.Tensor):
+        B, L = gene_ids.shape
+        D = self.gene_embeddings.embedding_dim
         gene_embed = self.gene_embeddings(gene_ids)
         expr_embed = self.expression_embeddings(expression_tokens)
-        combined = gene_embed + expr_embed
+        g_e_cat = torch.cat([gene_embed, expr_embed],dim=-1)
+        combined = self.mix_layer(g_e_cat)
         if self.use_positional:
             batch_size, seq_length = gene_ids.size()
             positions = torch.arange(seq_length, device=gene_ids.device).unsqueeze(0).expand(batch_size, seq_length)
             pos_embed = self.positional_embeddings(positions)
             combined = combined + pos_embed
         # If condition embeddings are used, add them only to the [CLS] token.
+        cls = combined[:, 0, :]
         if self.use_condition:
             if condition_tokens is None:
                 # If no condition tokens are provided, use a zero tensor.
                 cond_embed = torch.zeros(gene_ids.size(0), gene_embed.size(-1), device=gene_ids.device)
             else:
                 cond_embed = self.condition_embeddings(condition_tokens)
-            cls_token_updated = combined[:,0,:] + cond_embed
-            # Add condition embedding only to the first token ([CLS]).
-            combined = torch.cat([cls_token_updated.unsqueeze(1), combined[:, 1:, :]], dim=1)
+            cls = cls + cond_embed
         # Add library size embedding to [CLS] token.
         lib_embed = self.library_embeddings(library_size)  # (batch_size, embedding_dim)
-        combined[:, 0, :] = combined[:, 0, :] + cond_embed + lib_embed
+        cls = cls + lib_embed
+        # Add CLS back
+        combined = torch.cat([cls.unsqueeze(1), combined[:, 1:, :]], dim=1)
         return combined
 
 def generate_causal_mask(seq_len: int, device: torch.device):
@@ -185,6 +195,29 @@ class WholeGenomeExpressionPredictionHead(nn.Module):
         logits = logits.view(-1, self.total_gene_count, self.expression_vocab_size)
         return logits
     
+class MaskedGeneIDPredictionHead(nn.Module):
+    def __init__(self, d_model: int, gene_vocab_size: int):
+        """
+        Args:
+            d_model (int): The transformer embedding dimension.
+            gene_vocab_size (int): The number of gene IDs in your vocabulary
+                                   (including any reserved tokens).
+        """
+        super(MaskedGeneIDPredictionHead, self).__init__()
+        # Linear projection from transformer hidden dim to gene‐ID logits
+        self.fc = nn.Linear(d_model, gene_vocab_size)
+    def forward(self, token_outputs: torch.Tensor):
+        """
+        Args:
+            token_outputs (torch.Tensor): Output embeddings for each token
+                                          Shape: (batch_size, seq_length, d_model)
+        
+        Returns:
+            torch.Tensor: Logits for gene‐ID prediction at each position.
+                          Shape: (batch_size, seq_length, gene_vocab_size)
+        """
+        return self.fc(token_outputs)
+
 class GradientReversalFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, lambda_):
@@ -217,7 +250,7 @@ class DomainClassifier(nn.Module):
         return self.classifier(x)
     
 class FullModel(nn.Module):
-    def __init__(self, token_embedding_layer, encoder_layers, masked_head, whole_genome_head, domain_classifier, lambda_value):
+    def __init__(self, token_embedding_layer, encoder_layers, masked_head, whole_genome_head, domain_classifier, gene_id_head, lambda_value):
         super(FullModel, self).__init__()
         self.token_embedding_layer = token_embedding_layer
         self.encoder_layers = encoder_layers  # assume this is an nn.ModuleList
@@ -225,6 +258,7 @@ class FullModel(nn.Module):
         self.whole_genome_head = whole_genome_head
         self.domain_classifier = domain_classifier
         self.lambda_value = lambda_value
+        self.gene_id_head = gene_id_head
     def forward(self, batch):
         """
         Expects batch to be a dictionary with keys:
@@ -249,11 +283,13 @@ class FullModel(nn.Module):
         # Whole genome prediction: extract [CLS] token.
         cls_token = x[:, 0, :]  # (batch_size, d_model)
         whole_genome_logits = self.whole_genome_head(cls_token)
+        # Gene id prediction
+        gene_id_logits = self.gene_id_head(x)
         # Domain classification 
         reversed_embeddings = grad_reverse(cls_token, lambda_=self.lambda_value)
         # Forward pass through the domain classifer
         domain_preds = self.domain_classifier(reversed_embeddings)
-        return masked_logits, whole_genome_logits, cls_token, domain_preds
+        return masked_logits, whole_genome_logits, cls_token, domain_preds, gene_id_logits
     
 def get_random_mask_positions(token_tensor, mask_token_id: int, mask_fraction=0.2):
     """
@@ -289,28 +325,33 @@ def train_epoch_ddp(dataloader, ddp_model, optimizer, device, mask_token_id: int
             batch[key] = batch[key].to(device)
         # Create an input copy where the selected positions are replaced by MASK_TOKEN_ID
         current_expression_tokens = batch['expression_tokens'].clone()
+        current_gene_id_tokens = batch["gene_ids"].clone()
         optimizer.zero_grad()
         for step in range(num_iterative_steps): 
             # Update the batch dictionary with the current expression tokens.
             mask_positions = get_random_mask_positions(current_expression_tokens, mask_fraction)
             # (The rest of the batch remains unchanged.)
             input_expression_tokens = current_expression_tokens
-            input_expression_tokens[mask_positions] = mask_token_id
+            input_gene_id_tokens = current_gene_id_tokens
+            batch['expression_tokens'][mask_positions] = mask_token_id
+            batch["gene_ids"][mask_positions] = mask_token_id
             # Forward pass: Embed tokens, process with the transformer encoder,
             # and obtain prediction logits for the expression tokens.
-            masked_logits, whole_genome_logits, cls_token, domain_preds = ddp_model(batch)
+            masked_logits, whole_genome_logits, cls_token, domain_preds, gene_id_logits = ddp_model(batch)
             # Compute loss only on the masked positions
             if mask_positions.sum() > 0:
-                loss_masked = mse_loss_for_expression(masked_logits[mask_positions], batch['expression_tokens'][mask_positions], ignore_index=pad_token_id)
+                loss_masked = mse_loss_for_expression(masked_logits[mask_positions], input_expression_tokens[mask_positions], ignore_index=pad_token_id)
+                loss_gene_id = F.cross_entropy(gene_id_logits[mask_positions], input_gene_id_tokens[mask_positions],ignore_index=pad_token_id)
             else:
                 loss_masked = torch.tensor(0.0, device=device)
+                loss_gene_id = torch.tensor(0.0, device=device)
             # Compute loss on genome 
             loss_genome = mse_loss_for_expression(whole_genome_logits, batch["whole_genome_target"], ignore_index=pad_token_id)
             loss_similarity = compute_similarity_loss(cls_token, threshold = 0.95)
             # Compute a domain classification loss (e.g., cross-entropy) using the domain labels:
             loss_domain = F.cross_entropy(domain_preds, batch['domain'])
             # Combine losses
-            loss = loss_masked*0.1 + loss_genome*0.1 + loss_similarity*10 + loss_domain
+            loss = loss_masked*0.01 + loss_genome*0.01 + loss_similarity*10 + loss_domain + loss_gene_id*10
             loss.backward()
             optimizer.step()
             # Teacher forcing: Update the current expression tokens at masked positions with the model's predictions
@@ -331,9 +372,9 @@ def train_epoch_ddp(dataloader, ddp_model, optimizer, device, mask_token_id: int
                 # Update only those positions in current_expression_tokens where update_mask is True.
                 current_expression_tokens[update_mask] = predicted_tokens[update_mask]
                 # Detach to clear the computation graph for the next iteration.
-                # current_expression_tokens = current_expression_tokens.detach()
+                current_expression_tokens = current_expression_tokens.detach()
         total_loss += loss.item()
         num_batches += 1
     # Print loss 
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-    return avg_loss
+    return avg_loss, loss_masked, loss_genome, loss_similarity, loss_domain, loss_gene_id
