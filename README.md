@@ -4,7 +4,7 @@ Language of the cell
 *This is a work in progress*
 
 ## Pretraining
-Currently, we can pretrain on an anndata formatted dataset using the following incantation:
+Currently, we can pretrain on an anndata formatted datasets using the following incantation:
 
 ```
 torchrun --nproc-per-node=2 training.py \
