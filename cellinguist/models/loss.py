@@ -1,35 +1,45 @@
 import torch
 import torch.nn.functional as F
 
-def compute_similarity_loss(cell_embeddings, threshold=0.8):
+def compute_similarity_loss(cell_embeddings: torch.Tensor, threshold: float = 0.8) -> torch.Tensor:
     """
-    Computes a loss that encourages pairs of cell embeddings with cosine similarity above a threshold
-    to be even more similar. This loss is defined as the average of (1 - cosine_similarity) for all
-    pairs with similarity greater than the threshold.
-    
+    Computes a loss that pulls all pairs of cell embeddings with cosine 
+    similarity above `threshold` even closer together.
+
+    Loss per pair (i,j):  L_ij = max(0, 1 - cos(c_i, c_j)),  but **only** if cos(c_i,c_j) > threshold.
+    We average over those “positive” pairs. If no pair passes the threshold, we return zero.
+
     Args:
-        cell_embeddings (torch.Tensor): Tensor of shape (batch_size, d_model) for cell embeddings.
-        threshold (float): The cosine similarity threshold for selecting positive pairs.
-    
+        cell_embeddings: (batch_size, d_model)
+        threshold:       float in [-1, +1]. Only pairs with cos > threshold are included.
+
     Returns:
-        torch.Tensor: The similarity loss (a scalar).
+        a scalar tensor: average of (1 - cos_sim) over all (i<j) such that cos_sim > threshold.
     """
-    # Normalize embeddings so that cosine similarity is equivalent to dot product.
-    normalized = F.normalize(cell_embeddings, p=2, dim=1)
-    # Compute the pairwise cosine similarity matrix (batch_size x batch_size).
-    cos_sim = torch.mm(normalized, normalized.t())
-    batch_size = cell_embeddings.size(0)
-    # Create a mask for the upper triangular matrix, excluding the diagonal.
-    triu_mask = torch.triu(torch.ones(batch_size, batch_size, dtype=torch.bool, device=cell_embeddings.device), diagonal=1)
-    # Only use positive pairs
-    cos_sim = F.relu(cos_sim)
-    # Select pairs with cosine similarity above the threshold.
-    positive_pairs = (cos_sim > threshold) & triu_mask
-    if positive_pairs.sum() == 0:
-        # If no pair exceeds the threshold, return 0 loss.
-        return torch.tensor(0.0, device=cell_embeddings.device, requires_grad=True)
-    # For selected pairs, loss is defined as (1 - cosine_similarity).
-    loss = torch.mean(1 - (cos_sim - threshold) ** 2)
+    B, D = cell_embeddings.shape
+    if B < 2:
+        return torch.tensor(0.0, device=cell_embeddings.device)
+
+    # 1) Normalize so cosine = dot
+    normalized = F.normalize(cell_embeddings, p=2, dim=1)  # (B, D)
+
+    # 2) Full pairwise cosine matrix
+    cos_sim = normalized @ normalized.t()                   # (B, B)
+
+    # 3) We only care about i < j (upper triangle, no diagonal)
+    idx_i, idx_j = torch.triu_indices(B, B, offset=1, device=cell_embeddings.device)
+    cos_vals = cos_sim[idx_i, idx_j]                       # (B*(B-1)/2,)
+
+    # 4) Keep only those above threshold
+    positive_mask = cos_vals > threshold
+    if positive_mask.sum() == 0:
+        # no pairs above threshold → zero loss
+        return torch.tensor(0.0, device=cell_embeddings.device)
+
+    # 5) Define pairwise loss = (1 - cos), but only for those “positive” pairs.
+    selected_cos = cos_vals[positive_mask]                   # (num_pos,)
+    loss = torch.mean(1.0 - selected_cos)                    # scalar
+
     return loss
 
 def mse_loss_for_expression(logits: torch.Tensor, target: torch.Tensor, ignore_index: int):
