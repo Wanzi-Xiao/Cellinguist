@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 def bin_expression_counts(counts: np.ndarray, num_expression_bins: int, reserved_tokens_count: int):
@@ -319,3 +319,77 @@ def collate_fn_celltypes(samples, cls_token_id: int, pad_token_id: int):
         "domain": domain, # domain for gradient reversal
         "cell_types": cell_types # for cell typing
     }
+
+class BinarizedExpressionDataset(Dataset):
+    """
+    Wrap a (num_cells × num_genes) NumPy array so that each __getitem__ returns
+    a binarized row (0/1) indicating expression>threshold, as a torch.FloatTensor.
+    """
+    def __init__(self, expression_matrix: np.ndarray, threshold: int = 1):
+        super().__init__()
+        # expression_matrix: (N_cells, G)
+        self.X = np.asarray(expression_matrix)
+        self.threshold = threshold
+        self.N, self.G = self.X.shape
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, idx):
+        # Return a FloatTensor of shape (G,) with 1.0 where count > threshold, else 0.0
+        row = self.X[idx]
+        binarized = (row > self.threshold).astype(np.float32)
+        return torch.from_numpy(binarized)
+    
+def accumulate_cooccurrence(
+    dataloader: DataLoader,
+    num_genes: int,
+    device: torch.device
+) -> torch.Tensor:
+    """
+    Loop over dataloader to build C = X^T X on GPU.
+
+    Args:
+        dataloader: yields FloatTensors of shape (B, G), with entries in {0,1}.
+        num_genes: total number of genes G.
+        device: typically torch.device("cuda").
+
+    Returns:
+        C: a (G, G) co-occurrence matrix on GPU (float32).
+    """
+    # Initialize co-occurrence matrix on GPU
+    C = torch.zeros((num_genes, num_genes), dtype=torch.float32, device=device)
+
+    for batch_idx, bin_batch in enumerate(dataloader):
+        # bin_batch: (B, G) on CPU by default; move to GPU
+        Xb = bin_batch.to(device, non_blocking=True)  # (B, G)
+        # compute Xb^T @ Xb  → (G, G)
+        # we do float32 matmul on GPU
+        C_batch = Xb.transpose(0, 1).matmul(Xb)  # (G, G)
+        C += C_batch
+
+        if batch_idx % 10 == 0:
+            # print a quick progress indicator
+            print(f"  Processed batch {batch_idx}, partial sum norm={C.norm().item():.2e}")
+
+    return C
+
+def truncated_svd_gpu(M: torch.Tensor, emb_dim: int, n_iter: int = 5):
+    """
+    Compute a truncated (or randomized) SVD on M using torch.linalg.svd_lowrank.
+
+    Args:
+        M: a (G, G) matrix on GPU.
+        emb_dim: desired embedding dimension.
+        n_iter: number of power iterations for better accuracy.
+
+    Returns:
+        U_r: (G, emb_dim)  — left singular vectors * sqrt of singular values
+    """
+    # torch.linalg.svd_lowrank returns (U, S, Vh)
+    # If you want the rows of U * sqrt(S):
+    U, S, Vh = torch.svd_lowrank(M, niter=n_iter, q=emb_dim) 
+    # - U: (G, emb_dim), S: (emb_dim,), Vh: (emb_dim, G)
+    # We apply the GloVe trick: scale U by sqrt(S)
+    U_scaled = U * torch.sqrt(S.unsqueeze(0))  # broadcast to (G, emb_dim)
+    return U_scaled
