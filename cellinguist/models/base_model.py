@@ -15,56 +15,86 @@ class TokenEmbeddingLayer(nn.Module):
                  max_seq_len: int = 512,
                  use_positional: bool = True
                  ):
-        """
-        This layer sums embeddings for gene IDs, expression tokens, condition tokens,
-        and also adds an embedding for the library size covariate to the [CLS] token.
-        """
         super(TokenEmbeddingLayer, self).__init__()
-        self.gene_embeddings = nn.Embedding(gene_vocab_size, embedding_dim, padding_idx=pad_token_id)
-        self.expression_embeddings = nn.Embedding(expression_vocab_size, embedding_dim, padding_idx=pad_token_id)
-        self.use_condition = condition_vocab_size is not None
-        if self.use_condition:
-            # We expect a single condition token per sample.
-            self.condition_embeddings = nn.Embedding(condition_vocab_size, embedding_dim)
-        self.library_embeddings = nn.Embedding(library_vocab_size, embedding_dim)
+        D = embedding_dim
+
+        # 1) Raw embedding tables
+        self.gene_embeddings = nn.Embedding(gene_vocab_size, D, padding_idx=pad_token_id)
+        self.expression_embeddings = nn.Embedding(expression_vocab_size, D, padding_idx=pad_token_id)
+
+        # 2) Instead of a single Linear(2D→D), we create two separate Linear(D→D) projections
+        self.proj_gene = nn.Linear(D, D)
+        self.proj_expr = nn.Linear(D, D)
+
+        # 3) (Optional) a small nonlinearity or LayerNorm can sit on top
+        self.combine_norm = nn.LayerNorm(D)
+
+        # 4) Positional embeddings (added after combination)
         self.use_positional = use_positional
         if use_positional:
-            self.positional_embeddings = nn.Embedding(max_seq_len, embedding_dim)
-        self.mix_layer = nn.Sequential(
-            nn.Linear(2 * embedding_dim, embedding_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
-            nn.LayerNorm(embedding_dim)
-        )
-    def forward(self, gene_ids: torch.Tensor, expression_tokens: torch.Tensor,
-                condition_tokens: torch.Tensor, library_size: torch.Tensor):
+            self.positional_embeddings = nn.Embedding(max_seq_len, D)
+
+        # 5) Condition tokens (added to CLS later)
+        self.use_condition = (condition_vocab_size is not None)
+        if self.use_condition:
+            self.condition_embeddings = nn.Embedding(condition_vocab_size, D)
+
+        # 6) Library‐size embedding (also added to CLS)
+        self.library_embeddings = nn.Embedding(library_vocab_size, D)
+
+    def forward(self,
+                gene_ids:          torch.LongTensor,   # (B, L)
+                expression_tokens: torch.LongTensor,   # (B, L)
+                condition_tokens:  torch.LongTensor,   # (B,) or None
+                library_size:      torch.LongTensor    # (B,)
+                ):
         B, L = gene_ids.shape
-        D = self.gene_embeddings.embedding_dim
-        gene_embed = self.gene_embeddings(gene_ids)
-        expr_embed = self.expression_embeddings(expression_tokens)
-        g_e_cat = torch.cat([gene_embed, expr_embed],dim=-1)
-        combined = self.mix_layer(g_e_cat)
+        D     = self.gene_embeddings.embedding_dim
+
+        # --- STEP 1: look up raw embeddings (B, L, D) each ---
+        g_emb = self.gene_embeddings(gene_ids)       # gene‐ID branch
+        e_emb = self.expression_embeddings(expression_tokens)  # expression‐bin branch
+
+        # --- STEP 2: project each branch separately (B, L, D) ---
+        g_proj = self.proj_gene(g_emb)   # linear(D→D) on gene part
+        e_proj = self.proj_expr(e_emb)   # linear(D→D) on expression part
+
+        # --- STEP 3: sum them to force usage of both ---
+        combined = g_proj + e_proj       # (B, L, D)
+
+        # --- STEP 4: optional normalization / dropout (if desired) ---
+        combined = self.combine_norm(combined)  # LayerNorm over last dim
+
+        # --- STEP 5: add positional embeddings (if used) ---
         if self.use_positional:
-            batch_size, seq_length = gene_ids.size()
-            positions = torch.arange(seq_length, device=gene_ids.device).unsqueeze(0).expand(batch_size, seq_length)
-            pos_embed = self.positional_embeddings(positions)
-            combined = combined + pos_embed
-        # If condition embeddings are used, add them only to the [CLS] token.
-        cls = combined[:, 0, :]
+            positions = (
+                torch.arange(L, device=gene_ids.device)
+                .unsqueeze(0)
+                .expand(B, L)
+            )  # (B, L)
+            pos_emb = self.positional_embeddings(positions)  # (B, L, D)
+            combined = combined + pos_emb
+
+        # --- STEP 6: prepare CLS token for condition & library corrections ---
+        cls = combined[:, 0, :]  # (B, D)
+
+        # add condition embedding (if used)
         if self.use_condition:
             if condition_tokens is None:
-                # If no condition tokens are provided, use a zero tensor.
-                cond_embed = torch.zeros(gene_ids.size(0), gene_embed.size(-1), device=gene_ids.device)
+                c_emb = torch.zeros(B, D, device=gene_ids.device)
             else:
-                cond_embed = self.condition_embeddings(condition_tokens)
-            cls = cls + cond_embed
-        # Add library size embedding to [CLS] token.
-        lib_embed = self.library_embeddings(library_size)  # (batch_size, embedding_dim)
-        cls = cls + lib_embed
-        # Add CLS back
-        combined = torch.cat([cls.unsqueeze(1), combined[:, 1:, :]], dim=1)
-        return combined
+                c_emb = self.condition_embeddings(condition_tokens)  # (B, D)
+            cls = cls + c_emb
 
+        # add library‐size embedding
+        lib_emb = self.library_embeddings(library_size)  # (B, D)
+        cls = cls + lib_emb
+
+        # write CLS back into position 0
+        combined = torch.cat([cls.unsqueeze(1), combined[:, 1:, :]], dim=1)  # (B, L, D)
+
+        return combined
+    
 def generate_causal_mask(seq_len: int, device: torch.device):
     """
     Generates a causal mask for a sequence of length `seq_len`.
@@ -197,25 +227,9 @@ class WholeGenomeExpressionPredictionHead(nn.Module):
     
 class MaskedGeneIDPredictionHead(nn.Module):
     def __init__(self, d_model: int, gene_vocab_size: int):
-        """
-        Args:
-            d_model (int): The transformer embedding dimension.
-            gene_vocab_size (int): The number of gene IDs in your vocabulary
-                                   (including any reserved tokens).
-        """
-        super(MaskedGeneIDPredictionHead, self).__init__()
-        # Linear projection from transformer hidden dim to gene‐ID logits
+        super().__init__()
         self.fc = nn.Linear(d_model, gene_vocab_size)
-    def forward(self, token_outputs: torch.Tensor):
-        """
-        Args:
-            token_outputs (torch.Tensor): Output embeddings for each token
-                                          Shape: (batch_size, seq_length, d_model)
-        
-        Returns:
-            torch.Tensor: Logits for gene‐ID prediction at each position.
-                          Shape: (batch_size, seq_length, gene_vocab_size)
-        """
+    def forward(self, token_outputs):
         return self.fc(token_outputs)
 
 class GradientReversalFunction(torch.autograd.Function):
@@ -347,11 +361,11 @@ def train_epoch_ddp(dataloader, ddp_model, optimizer, device, mask_token_id: int
                 loss_gene_id = torch.tensor(0.0, device=device)
             # Compute loss on genome 
             loss_genome = mse_loss_for_expression(whole_genome_logits, batch["whole_genome_target"], ignore_index=pad_token_id)
-            loss_similarity = compute_similarity_loss(cls_token, threshold = 0.95)
+            loss_similarity = compute_similarity_loss(cls_token, threshold = 0.9)
             # Compute a domain classification loss (e.g., cross-entropy) using the domain labels:
             loss_domain = F.cross_entropy(domain_preds, batch['domain'])
             # Combine losses
-            loss = loss_masked*0.01 + loss_genome*0.01 + loss_similarity*10 + loss_domain + loss_gene_id*10
+            loss = loss_masked*0.005 + loss_genome*0.01 + loss_similarity*10 + loss_domain*5 + loss_gene_id*5
             loss.backward()
             optimizer.step()
             # Teacher forcing: Update the current expression tokens at masked positions with the model's predictions

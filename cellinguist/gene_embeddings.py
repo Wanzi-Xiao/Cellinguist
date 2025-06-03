@@ -39,7 +39,7 @@ def main():
 
     ## Load anndata
     # dat = ad.read_h5ad(args.input_anndata)
-    dat = ad.read_h5ad("/home/arc85/Desktop/scrnaseq_transformer/01_input/HNSCC_overall_annotated_250512.h5ad")
+    dat = ad.read_h5ad(args.input_anndata)
     dense_matrix = dat.X.toarray()
 
     ## Set gene ids and vocab size
