@@ -23,6 +23,7 @@ def main():
     ## Parse input arguments
     parser = argparse.ArgumentParser(description="Cellinguist model for learning the language of cells.")
     parser.add_argument("--input_anndata", type=str, required=True, help="Path to anndata file.")
+    parser.add_argument("--input_gene_embedding", type=str, help="Warm started gene embedding model.")
     parser.add_argument("--domain_for_grad_rev", type=str, help="Optional column name of metadata containing the domain info (such as sequencing batch) for gradient reversal.")
     parser.add_argument("--condition_data", type=str, help="Optional column name of metadata containing condition info.")
     parser.add_argument("--batch_size", type=int, default=32, help="Optional column name of metadata containing condition info.")
@@ -111,6 +112,11 @@ def main():
         pad_token_id=PAD_TOKEN_ID
     ).to(device)
 
+    loaded_tensor = torch.load(args.input_gene_embedding,weights_only=True)
+
+    with torch.no_grad():
+        token_embedding_layer.gene_embeddings.weight.copy_(loaded_tensor.to(token_embedding_layer.gene_embeddings.weight.device))
+
     ## Flash transformer
     flash_encoder_layers = nn.ModuleList([
         FlashTransformerEncoderLayer(d_model=args.flash_encoder_dim, nhead=args.flash_encoder_heads, dropout=0.1, causal=False)
@@ -144,10 +150,13 @@ def main():
     
     # Freeze expression embeddings for first epoch
     for p in full_model.token_embedding_layer.expression_embeddings.parameters():
-        p.requires_grad = False
+        p.requires_grad = True
+
+    for p in full_model.masked_head.parameters():
+        p.required_grad = True
 
     for p in full_model.whole_genome_head.parameters():
-        p.required_grad = False
+        p.required_grad = True
 
     # Wrap the model with DistributedDataParallel.
     ddp_model = DDP(full_model, device_ids=[local_rank])
@@ -169,10 +178,12 @@ def main():
     
     for epoch in range(NUM_EPOCHS):
         sampler.set_epoch(epoch)  # shuffle dataset for distributed sampler
-        if epoch == 1:
+        if epoch == 2:
             for p in ddp_model.module.token_embedding_layer.expression_embeddings.parameters():
                 p.requires_grad=True
             for p in ddp_model.module.whole_genome_head.parameters():
+                p.requires_grad=True
+            for p in ddp_model.module.masked_head.parameters():
                 p.requires_grad=True
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, ddp_model.parameters()),
