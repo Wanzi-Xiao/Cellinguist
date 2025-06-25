@@ -1,0 +1,23 @@
+## Start a GPU job
+$ sbatch tunnel.sbatch  
+Submitted batch job 1383495  
+
+## Check jobs in the GPU node
+$ squeue -M gpu -u wax11
+CLUSTER: gpu
+             JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
+           1223938      a100   tunnel    wax11  R       4:53      1 gpu-n33
+
+## Access to GPU node
+$ ssh gpu-n33
+
+## Activate Conda environment
+$ source /ihome/acillo/wax11/miniconda3/bin/activate CellLinguistEnv
+
+## Go to project directory
+$ cd /ix1/acillo/wax11/Cellinguist
+
+## Start running!
+torchrun --nproc_per_node=1 -m cellinguist.training  \
+   --input_anndata="../TestOfLLM_project/03_output/subset_top2000.h5ad"  \
+   --out_model=/ix1/acillo/wax11/Cellinguist/ser_top2000_model.pth
