@@ -46,10 +46,10 @@ def main():
 
     ## Load anndata
     dat = ad.read_h5ad(args.input_anndata)
-    dense_matrix = dat.X.toarray()
+    dense_matrix = dat.X if isinstance(dat.X, np.ndarray) else dat.X.toarray()
 
     ## Set gene ids and vocab size
-    gene_ids = dat.var.gene.to_numpy()
+    gene_ids = dat.var.index.to_numpy()
     num_of_genes = len(gene_ids)
 
     ## Set domains for normalization (optional)
@@ -112,11 +112,17 @@ def main():
         pad_token_id=PAD_TOKEN_ID
     ).to(device)
 
-    loaded_tensor = torch.load(args.input_gene_embedding,weights_only=True)
+    if args.input_gene_embedding:
+        loaded_tensor = torch.load(args.input_gene_embedding, weights_only=True)
+    else:
+        loaded_tensor = None
 
     with torch.no_grad():
-        token_embedding_layer.gene_embeddings.weight.copy_(loaded_tensor.to(token_embedding_layer.gene_embeddings.weight.device))
-
+        if loaded_tensor is not None:
+            token_embedding_layer.gene_embeddings.weight.copy_(
+                loaded_tensor.to(token_embedding_layer.gene_embeddings.weight.device)
+            )
+            
     ## Flash transformer
     flash_encoder_layers = nn.ModuleList([
         FlashTransformerEncoderLayer(d_model=args.flash_encoder_dim, nhead=args.flash_encoder_heads, dropout=0.1, causal=False)
@@ -159,7 +165,7 @@ def main():
         p.required_grad = True
 
     # Wrap the model with DistributedDataParallel.
-    ddp_model = DDP(full_model, device_ids=[local_rank])
+    ddp_model = DDP(full_model, device_ids=[local_rank], find_unused_parameters=True)
 
     # Create your dataset and distributed sampler.
     # Assume dataset and collate_fn_unified are defined.
