@@ -172,3 +172,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+Miniconda3-latest-Linux-x86_64.sh
+ser_top2000_model.pth
