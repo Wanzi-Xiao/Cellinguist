@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from flash_attn.flash_attn_interface import flash_attn_func
+# from flash_attn.flash_attn_interface import flash_attn_func
 from .loss import compute_similarity_loss, mse_loss_for_expression
 import torch.nn.functional as F
 
@@ -111,73 +111,94 @@ def generate_causal_mask(seq_len: int, device: torch.device):
     mask = torch.triu(torch.full((seq_len, seq_len), float('-inf')), diagonal=1).to(device)
     return mask
 
+# class FlashTransformerEncoderLayer(nn.Module):
+#     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1, causal: bool = False):
+#         """
+#         A Transformer encoder layer that uses Flash Attention via flash_attn_func.
+        
+#         Args:
+#             d_model (int): Embedding dimension.
+#             nhead (int): Number of attention heads.
+#             dim_feedforward (int): Dimension of the feedforward network.
+#             dropout (float): Dropout rate.
+#             causal (bool): Whether to use causal masking.
+#         """
+#         super(FlashTransformerEncoderLayer, self).__init__()
+#         self.d_model = d_model
+#         self.nhead = nhead
+#         self.causal = causal
+#         self.dropout = nn.Dropout(dropout)
+#         # Linear projections for Q, K, and V.
+#         self.q_proj = nn.Linear(d_model, d_model)
+#         self.k_proj = nn.Linear(d_model, d_model)
+#         self.v_proj = nn.Linear(d_model, d_model)
+#         # Output projection.
+#         self.out_proj = nn.Linear(d_model, d_model)
+#         self.norm1 = nn.LayerNorm(d_model)
+#         self.norm2 = nn.LayerNorm(d_model)
+#         # Feedforward network.
+#         self.ff = nn.Sequential(
+#             nn.Linear(d_model, dim_feedforward),
+#             nn.ReLU(),
+#             nn.Dropout(dropout),
+#             nn.Linear(dim_feedforward, d_model),
+#             nn.Dropout(dropout)
+#         )
+#     def forward(self, x, key_padding_mask=None):
+#         batch_size, seq_length, d_model = x.size()
+#         d_head = d_model // self.nhead  # dimension per head
+#         # Project the inputs to Q, K, and V.
+#         Q = self.q_proj(x)  # (B, seq_length, d_model)
+#         K = self.k_proj(x)
+#         V = self.v_proj(x)
+#         # Reshape Q, K, V to (B, seq_length, nhead, d_head).
+#         Q = Q.view(batch_size, seq_length, self.nhead, d_head)
+#         K = K.view(batch_size, seq_length, self.nhead, d_head)
+#         V = V.view(batch_size, seq_length, self.nhead, d_head)
+#         # Option 1: Explicitly cast to half precision.
+#         Q = Q.half()
+#         K = K.half()
+#         V = V.half()
+#     # Option 2: Use autocast (comment out the explicit casting above and wrap with autocast)
+#     # with torch.cuda.amp.autocast(dtype=torch.float16):
+#     #     attn_output = flash_attn_func(Q, K, V, dropout_p=self.dropout.p, causal=self.causal)
+#         # Here we use explicit casting:
+#         attn_output = flash_attn_func(Q, K, V, dropout_p=self.dropout.p, causal=self.causal)
+#         # The output of flash_attn_func is in fp16; cast back to original precision if needed.
+#         attn_output = attn_output.to(x.dtype)
+#         # Reshape back to (B, seq_length, d_model)
+#         attn_output = attn_output.view(batch_size, self.nhead, seq_length, d_head)
+#         attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, d_model)
+#         attn_output = self.out_proj(attn_output)
+#         # Residual connection and normalization.
+#         x = x + self.dropout(attn_output)
+#         x = self.norm1(x)
+#         ff_output = self.ff(x)
+#         x = x + ff_output
+#         x = self.norm2(x)
+#         return x
 class FlashTransformerEncoderLayer(nn.Module):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1, causal: bool = False):
-        """
-        A Transformer encoder layer that uses Flash Attention via flash_attn_func.
-        
-        Args:
-            d_model (int): Embedding dimension.
-            nhead (int): Number of attention heads.
-            dim_feedforward (int): Dimension of the feedforward network.
-            dropout (float): Dropout rate.
-            causal (bool): Whether to use causal masking.
-        """
-        super(FlashTransformerEncoderLayer, self).__init__()
-        self.d_model = d_model
-        self.nhead = nhead
-        self.causal = causal
-        self.dropout = nn.Dropout(dropout)
-        # Linear projections for Q, K, and V.
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        # Output projection.
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        # Feedforward network.
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, d_model),
-            nn.Dropout(dropout)
+        super().__init__()
+        self.transformer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
         )
+        self.causal = causal
+
     def forward(self, x, key_padding_mask=None):
-        batch_size, seq_length, d_model = x.size()
-        d_head = d_model // self.nhead  # dimension per head
-        # Project the inputs to Q, K, and V.
-        Q = self.q_proj(x)  # (B, seq_length, d_model)
-        K = self.k_proj(x)
-        V = self.v_proj(x)
-        # Reshape Q, K, V to (B, seq_length, nhead, d_head).
-        Q = Q.view(batch_size, seq_length, self.nhead, d_head)
-        K = K.view(batch_size, seq_length, self.nhead, d_head)
-        V = V.view(batch_size, seq_length, self.nhead, d_head)
-        # Option 1: Explicitly cast to half precision.
-        Q = Q.half()
-        K = K.half()
-        V = V.half()
-    # Option 2: Use autocast (comment out the explicit casting above and wrap with autocast)
-    # with torch.cuda.amp.autocast(dtype=torch.float16):
-    #     attn_output = flash_attn_func(Q, K, V, dropout_p=self.dropout.p, causal=self.causal)
-        # Here we use explicit casting:
-        attn_output = flash_attn_func(Q, K, V, dropout_p=self.dropout.p, causal=self.causal)
-        # The output of flash_attn_func is in fp16; cast back to original precision if needed.
-        attn_output = attn_output.to(x.dtype)
-        # Reshape back to (B, seq_length, d_model)
-        attn_output = attn_output.view(batch_size, self.nhead, seq_length, d_head)
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_length, d_model)
-        attn_output = self.out_proj(attn_output)
-        # Residual connection and normalization.
-        x = x + self.dropout(attn_output)
-        x = self.norm1(x)
-        ff_output = self.ff(x)
-        x = x + ff_output
-        x = self.norm2(x)
-        return x
-    
+        if self.causal:
+            seq_len = x.size(1)
+            causal_mask = torch.triu(torch.full((seq_len, seq_len), float('-inf'), device=x.device), diagonal=1)
+        else:
+            causal_mask = None
+        return self.transformer(x, src_mask=causal_mask, src_key_padding_mask=key_padding_mask)
+
+
+        
 class MaskedGeneExpressionPredictionHead(nn.Module):
     def __init__(self, d_model: int, expression_vocab_size: int):
         """
