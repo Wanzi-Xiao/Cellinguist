@@ -16,13 +16,24 @@ from cellinguist.data.data_funcs import SingleCellDatasetUnified, collate_fn_uni
 from cellinguist.models.base_model import TokenEmbeddingLayer, FlashTransformerEncoderLayer, MaskedGeneExpressionPredictionHead, WholeGenomeExpressionPredictionHead, DomainClassifier, FullModel, get_random_mask_positions, train_epoch_ddp
 
 def main():
+     ## Parse input arguments
+    parser = argparse.ArgumentParser(description="Function to extract gene embedding from a trained model.")
+    parser.add_argument("--input_anndata", type=str, required=True, help="Path to anndata file.")
+    parser.add_argument("--in_model", type=str, required=True, help="Path to trained model, should end in pth extension.")
+    parser.add_argument("--domain_for_grad_rev", type=str, help="Optional column name of metadata containing the domain info (such as sequencing batch) for gradient reversal.")
+    parser.add_argument("--condition_data", type=str, help="Optional column name of metadata containing condition info.")
+    parser.add_argument("--reserved_cls_token", type=int, default=0, help="Reserved token for CLS.")
+    parser.add_argument("--reserved_pad_token", type=int, default=1, help="Reserved token for padding.")
+    parser.add_argument("--reserved_mask_token", type=int, default=2, help="Reserved token for masking.")
+    parser.add_argument("--num_expression_bins", type=int, default=128, help="Number of bins for expression data.")
+    parser.add_argument("--num_library_bins", type=int, default=20, help="Number of bins for library size normalization.")
 
     ## Load anndata
     dat = ad.read_h5ad(args.input_anndata)
-    dense_matrix = dat.X.toarray()
+    dense_matrix = dat.X if isinstance(dat.X, np.ndarray) else dat.X.toarray()
 
     ## Set gene ids and vocab size
-    gene_ids = dat.var.gene.to_numpy()
+    gene_ids = dat.var.index.to_numpy()
     num_of_genes = len(gene_ids)
 
     ## Set domains for normalization (optional)
@@ -74,7 +85,7 @@ def main():
 
     # 2) load pretrained backbone
     backbone = DeepSetModel(...).to(device)
-    backbone.load_state_dict(torch.load("cellinguist_base.pth"))
+    backbone.load_state_dict(torch.load(args.in_model, map_location=device)) 
     model = CellinguistForCellType(backbone, num_cell_types=NUM_TYPES, freeze_backbone=True).to(device)
 
     # 3) optimizer over only classifier params (and un-frozen backbone if you like)
