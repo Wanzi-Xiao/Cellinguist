@@ -40,10 +40,10 @@ def main():
     ## Load anndata
     # dat = ad.read_h5ad(args.input_anndata)
     dat = ad.read_h5ad(args.input_anndata)
-    dense_matrix = dat.X.toarray()
+    dense_matrix = dat.X if isinstance(dat.X, np.ndarray) else dat.X.toarray()
 
     ## Set gene ids and vocab size
-    gene_ids = dat.var.gene.to_numpy()
+    gene_ids = dat.var.index.to_numpy()
     num_of_genes = len(gene_ids)
 
     ## Set domains for normalization (optional)
@@ -149,7 +149,7 @@ def main():
     gene_embeddings = gene_embeddings.numpy()
     
     # Combine with gene names 
-    gene_embed_pd = pd.DataFrame(gene_embeddings,index=[['CLS','PAD','MASK'] + dat.var['gene'].tolist()])
+    gene_embed_pd = pd.DataFrame(gene_embeddings,index=[['CLS','PAD','MASK'] + dat.var.index.tolist()])
     # Save output
     gene_embed_pd.to_csv(args.out_embedding)
 
