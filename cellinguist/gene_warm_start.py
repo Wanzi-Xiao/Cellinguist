@@ -1,3 +1,10 @@
+<<<<<<< HEAD
+=======
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+>>>>>>> main
 import numpy as np
 import torch
 import anndata as ad
@@ -6,8 +13,13 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
 ## Load anndata
+<<<<<<< HEAD
 dat = ad.read_h5ad("/home/arc85/Desktop/scrnaseq_transformer/01_input/HD_PBMC_5prime_3prime_250603b.h5ad")
 dense_matrix = dat.X.toarray()
+=======
+dat = ad.read_h5ad("../TestOfLLM_project/03_output/subset_top2000.h5ad")
+dense_matrix = dat.X
+>>>>>>> main
 
 # Suppose `expr` is your huge (N_cells, G) NumPy array of raw counts.
 dataset = BinarizedExpressionDataset(dense_matrix, threshold=1)
