@@ -39,10 +39,10 @@ def main():
 
     ## Load anndata
     dat = ad.read_h5ad(args.input_anndata)
-    dense_matrix = dat.X.toarray()
+    dense_matrix = dat.X if isinstance(dat.X, np.ndarray) else dat.X.toarray()
 
     ## Set gene ids and vocab size
-    gene_ids = dat.var.gene.to_numpy()
+    gene_ids = dat.var.index.to_numpy()
     num_of_genes = len(gene_ids)
 
     ## Set domains for normalization (optional)

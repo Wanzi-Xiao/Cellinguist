@@ -21,3 +21,20 @@ $ cd /ix1/acillo/wax11/Cellinguist
 torchrun --nproc_per_node=1 -m cellinguist.training  \
    --input_anndata="../TestOfLLM_project/03_output/subset_top2000.h5ad"  \
    --out_model=/ix1/acillo/wax11/Cellinguist/ser_top2000_model.pth
+
+## Running cell_embeddings.py
+python -m cellinguist.cell_embeddings \
+    --input_anndata="../TestOfLLM_project/03_output/subset_top2000.h5ad" \
+    --in_model="ser_top2000_model.pth" \
+    --out_embedding="cell_embeddings.csv"
+
+## Running gene_embeddings.py
+python -m cellinguist.gene_embeddings \
+    --input_anndata="../TestOfLLM_project/03_output/subset_top2000.h5ad" \
+    --in_model="ser_top2000_model.pth" \
+    --out_embedding="gene_embeddings.csv"
+  
+## Running cell_typing.py
+python -m cellinguist.cell_typing \
+     --input_anndata="../TestOfLLM_project/03_output/subset_top2000.h5ad" \
+      --in_model="ser_top2000_model.pth"
