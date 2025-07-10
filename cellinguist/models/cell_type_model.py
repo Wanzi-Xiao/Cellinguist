@@ -1,9 +1,6 @@
 import torch
 import torch.nn as nn
 
-import torch
-import torch.nn as nn
-
 class CellinguistForCellType(nn.Module):
     def __init__(self,
                  backbone: nn.Module,
@@ -37,7 +34,7 @@ class CellinguistForCellType(nn.Module):
           }
         """
         # Call the backbone exactly as it expects
-        masked_logits, whole_genome_logits, cls_token, domain_preds = self.backbone(batch)
+        masked_logits, whole_genome_logits, cls_token, domain_preds, *_ = self.backbone(batch)
 
         # cls_token is your (B, 512) cell embedding
         logits = self.cls_head(cls_token)  # (B, num_cell_types)

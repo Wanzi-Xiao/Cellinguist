@@ -6,8 +6,8 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 
 ## Load anndata
-dat = ad.read_h5ad("/home/arc85/Desktop/scrnaseq_transformer/01_input/HD_PBMC_5prime_3prime_250603b.h5ad")
-dense_matrix = dat.X.toarray()
+dat = ad.read_h5ad("../TestOfLLM_project/03_output/subset_top2000_celltype.h5ad")
+dense_matrix = dat.X if isinstance(dat.X, np.ndarray) else dat.X.toarray()
 
 # Suppose `expr` is your huge (N_cells, G) NumPy array of raw counts.
 dataset = BinarizedExpressionDataset(dense_matrix, threshold=1)

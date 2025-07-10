@@ -17,6 +17,8 @@ import torch.distributed as dist
 from cellinguist.models.loss import mse_loss_for_expression, compute_similarity_loss
 from cellinguist.data.data_funcs import SingleCellDatasetUnified, collate_fn_unified
 from cellinguist.models.base_model import TokenEmbeddingLayer, FlashTransformerEncoderLayer, MaskedGeneExpressionPredictionHead, MaskedGeneIDPredictionHead, WholeGenomeExpressionPredictionHead, DomainClassifier, FullModel, get_random_mask_positions, train_epoch_ddp
+from flash_attn.flash_attn_interface import flash_attn_func
+
 
 def main():
 
