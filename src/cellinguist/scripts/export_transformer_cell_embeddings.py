@@ -27,6 +27,7 @@ def build_transformer_vae_from_checkpoint(
     max_tokens_per_cell_override: int | None = None,
     min_expr_for_token_override: float | None = None,
 ) -> tuple[GeneVAE, dict]:
+    # Note: perturbation_dim/perturb_emb_dim are passed to the decoder only.
     ckpt_raw = torch.load(checkpoint_path, map_location="cpu")
     train_cfg = ckpt_raw.get("config", {})
     encoder_type = str(train_cfg.get("encoder_type", "cbow")).lower()
@@ -57,8 +58,6 @@ def build_transformer_vae_from_checkpoint(
         n_hidden_layers=n_hidden_layers,
         n_conditions=n_conditions,
         cond_emb_dim=cond_emb_dim,
-        perturbation_dim=perturbation_dim,
-        perturb_emb_dim=perturb_emb_dim,
         input_transform=input_transform,
         transformer_d_model=int(train_cfg.get("transformer_d_model", 256)),
         transformer_n_heads=int(train_cfg.get("transformer_n_heads", 8)),

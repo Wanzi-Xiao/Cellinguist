@@ -71,8 +71,6 @@ def build_cbow_vae_from_checkpoint(
         n_hidden_layers=n_hidden_layers,
         n_conditions=n_conditions,
         cond_emb_dim=cond_emb_dim,
-        perturbation_dim=perturbation_dim,
-        perturb_emb_dim=perturb_emb_dim,
         freeze_gene_embeddings=freeze_gene_embeddings,
         input_transform=input_transform,
     )

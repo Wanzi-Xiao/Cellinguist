@@ -50,8 +50,6 @@ def build_perceiver_vae_from_checkpoint(
         n_hidden_layers=n_hidden_layers,
         n_conditions=n_conditions,
         cond_emb_dim=cond_emb_dim,
-        perturbation_dim=perturbation_dim,
-        perturb_emb_dim=perturb_emb_dim,
         input_transform=input_transform,
         library_norm=library_norm,
         library_norm_target_sum=library_norm_target_sum,

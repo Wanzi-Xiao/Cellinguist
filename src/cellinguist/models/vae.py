@@ -206,8 +206,6 @@ class CBOWCellEncoder(nn.Module):
         n_hidden_layers: int,
         n_conditions: Optional[int] = None,
         cond_emb_dim: int = 16,
-        perturbation_dim: Optional[int] = None,
-        perturb_emb_dim: int = 32,
         freeze_gene_embeddings: bool = True,
         input_transform: str = "log1p",   # "log1p" or "none"
     ) -> None:
@@ -237,17 +235,7 @@ class CBOWCellEncoder(nn.Module):
             self.cond_embedding = None
             cond_input_dim = 0
 
-        if perturbation_dim is not None:
-            self.perturb_projector = PerturbationProjector(
-                input_dim=int(perturbation_dim),
-                output_dim=int(perturb_emb_dim),
-            )
-            perturb_input_dim = int(perturb_emb_dim)
-        else:
-            self.perturb_projector = None
-            perturb_input_dim = 0
-
-        encoder_input_dim = d_gene + cond_input_dim + perturb_input_dim
+        encoder_input_dim = d_gene + cond_input_dim
 
         # MLP to latent parameters
         self.mlp_mu = MLP(
@@ -265,7 +253,7 @@ class CBOWCellEncoder(nn.Module):
 
         self.input_transform = input_transform
 
-    def forward(self, x_expr, cond_idx=None, perturb_vec=None, **kwargs):
+    def forward(self, x_expr, cond_idx=None, **kwargs):
         B, G = x_expr.shape
         assert G == self.n_genes
 
@@ -300,12 +288,6 @@ class CBOWCellEncoder(nn.Module):
             h_in = torch.cat([h_cell, c], dim=-1)
         else:
             h_in = h_cell
-
-        if self.perturb_projector is not None:
-            if perturb_vec is None:
-                raise ValueError("perturb_vec is required when perturbation_dim is configured.")
-            p = self.perturb_projector(perturb_vec.to(dtype=h_in.dtype, device=h_in.device))
-            h_in = torch.cat([h_in, p], dim=-1)
 
         if torch.isnan(h_in).any() or torch.isinf(h_in).any():
             print("NaNs/Infs in h_in BEFORE MLP")
@@ -344,8 +326,6 @@ class PerceiverCellEncoder(nn.Module):
         n_hidden_layers: int,
         n_conditions: Optional[int] = None,
         cond_emb_dim: int = 16,
-        perturbation_dim: Optional[int] = None,
-        perturb_emb_dim: int = 32,
         input_transform: str = "log1p",
         library_norm: str = "size_factor",
         library_norm_target_sum: float = 1e4,
@@ -415,17 +395,7 @@ class PerceiverCellEncoder(nn.Module):
             self.cond_embedding = None
             cond_input_dim = 0
 
-        if perturbation_dim is not None:
-            self.perturb_projector = PerturbationProjector(
-                input_dim=int(perturbation_dim),
-                output_dim=int(perturb_emb_dim),
-            )
-            perturb_input_dim = int(perturb_emb_dim)
-        else:
-            self.perturb_projector = None
-            perturb_input_dim = 0
-
-        encoder_input_dim = d_model + cond_input_dim + perturb_input_dim
+        encoder_input_dim = d_model + cond_input_dim
         self.mlp_mu = MLP(
             input_dim=encoder_input_dim,
             output_dim=self.latent_dim,
@@ -443,7 +413,6 @@ class PerceiverCellEncoder(nn.Module):
         self,
         x_expr: torch.Tensor,
         cond_idx: Optional[torch.Tensor] = None,
-        perturb_vec: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         bsz, n_genes = x_expr.shape
@@ -482,12 +451,6 @@ class PerceiverCellEncoder(nn.Module):
         else:
             h_in = h_cell
 
-        if self.perturb_projector is not None:
-            if perturb_vec is None:
-                raise ValueError("perturb_vec is required when perturbation_dim is configured.")
-            p = self.perturb_projector(perturb_vec.to(dtype=h_in.dtype, device=h_in.device))
-            h_in = torch.cat([h_in, p], dim=-1)
-
         mu = self.mlp_mu(h_in)
         logvar = self.mlp_logvar(h_in)
         return mu, logvar
@@ -511,8 +474,6 @@ class TransformerCellEncoder(nn.Module):
         n_hidden_layers: int,
         n_conditions: Optional[int] = None,
         cond_emb_dim: int = 16,
-        perturbation_dim: Optional[int] = None,
-        perturb_emb_dim: int = 32,
         input_transform: str = "log1p",
         transformer_d_model: int = 256,
         transformer_n_heads: int = 8,
@@ -577,17 +538,7 @@ class TransformerCellEncoder(nn.Module):
             self.cond_embedding = None
             cond_input_dim = 0
 
-        if perturbation_dim is not None:
-            self.perturb_projector = PerturbationProjector(
-                input_dim=int(perturbation_dim),
-                output_dim=int(perturb_emb_dim),
-            )
-            perturb_input_dim = int(perturb_emb_dim)
-        else:
-            self.perturb_projector = None
-            perturb_input_dim = 0
-
-        encoder_input_dim = d_model + cond_input_dim + perturb_input_dim
+        encoder_input_dim = d_model + cond_input_dim
         self.mlp_mu = MLP(
             input_dim=encoder_input_dim,
             output_dim=self.latent_dim,
@@ -802,7 +753,6 @@ class TransformerCellEncoder(nn.Module):
         self,
         x_expr: torch.Tensor,
         cond_idx: Optional[torch.Tensor] = None,
-        perturb_vec: Optional[torch.Tensor] = None,
         token_gene_idx: Optional[torch.Tensor] = None,
         token_gene_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -825,12 +775,6 @@ class TransformerCellEncoder(nn.Module):
         else:
             h_in = h_cell
 
-        if self.perturb_projector is not None:
-            if perturb_vec is None:
-                raise ValueError("perturb_vec is required when perturbation_dim is configured.")
-            p = self.perturb_projector(perturb_vec.to(dtype=h_in.dtype, device=h_in.device))
-            h_in = torch.cat([h_in, p], dim=-1)
-
         mu = self.mlp_mu(h_in)
         logvar = self.mlp_logvar(h_in)
         return mu, logvar
@@ -839,7 +783,6 @@ class TransformerCellEncoder(nn.Module):
         self,
         x_expr: torch.Tensor,
         cond_idx: Optional[torch.Tensor] = None,
-        perturb_vec: Optional[torch.Tensor] = None,
         token_gene_idx: Optional[torch.Tensor] = None,
         token_gene_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
@@ -861,12 +804,6 @@ class TransformerCellEncoder(nn.Module):
             h_in = torch.cat([h_cell, c], dim=-1)
         else:
             h_in = h_cell
-
-        if self.perturb_projector is not None:
-            if perturb_vec is None:
-                raise ValueError("perturb_vec is required when perturbation_dim is configured.")
-            p = self.perturb_projector(perturb_vec.to(dtype=h_in.dtype, device=h_in.device))
-            h_in = torch.cat([h_in, p], dim=-1)
 
         mu = self.mlp_mu(h_in)
         logvar = self.mlp_logvar(h_in)
@@ -997,10 +934,9 @@ class GeneVAE(nn.Module):
         self,
         x_expr: torch.Tensor,
         cond_idx: Optional[torch.Tensor] = None,
-        perturb_vec: Optional[torch.Tensor] = None,
         **encoder_kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.encoder(x_expr, cond_idx, perturb_vec=perturb_vec, **encoder_kwargs)
+        return self.encoder(x_expr, cond_idx, **encoder_kwargs)
 
     @staticmethod
     def reparameterize(
@@ -1038,7 +974,6 @@ class GeneVAE(nn.Module):
         mu, logvar = self.encode(
             x_expr,
             cond_idx,
-            perturb_vec=perturb_vec,
             **encoder_kwargs,
         )
         z = self.reparameterize(mu, logvar)
