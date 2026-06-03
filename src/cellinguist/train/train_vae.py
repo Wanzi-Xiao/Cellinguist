@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime
 import os
 import traceback
@@ -532,6 +533,12 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 dist.broadcast(b.data, src=0)
             _log(rank, "initial parameter/buffer broadcast complete")
 
+        loss_csv_path = ckpt_dir / f"{cfg.run_name}_loss_curve.csv"
+        loss_csv_fields = ["epoch", "loss", "recon", "kl", "metric", "adv", "val_recon"]
+        if is_main and start_epoch == 0:
+            with open(loss_csv_path, "w", newline="") as _f:
+                csv.writer(_f).writerow(loss_csv_fields)
+
         model.train()
         _log(rank, f"training loop start: epochs={cfg.epochs} start_epoch={start_epoch}")
 
@@ -778,9 +785,8 @@ def train_vae(cfg: VAETrainConfig) -> str:
 
             if is_main:
                 denom = max(nb, 1)
-                val_msg = ""
-                if val_nb > 0:
-                    val_msg = f" val_recon={val_recon/max(val_nb, 1):.4f}"
+                val_recon_mean = val_recon / max(val_nb, 1) if val_nb > 0 else float("nan")
+                val_msg = "" if val_nb == 0 else f" val_recon={val_recon_mean:.4f}"
                 print(
                     f"[VAE] Epoch {epoch+1}/{cfg.epochs} "
                     f"loss={total/denom:.4f} "
@@ -790,6 +796,16 @@ def train_vae(cfg: VAETrainConfig) -> str:
                     f"adv={total_adv/denom:.4f}"
                     f"{val_msg}"
                 )
+                with open(loss_csv_path, "a", newline="") as _f:
+                    csv.writer(_f).writerow([
+                        epoch + 1,
+                        f"{total/denom:.6f}",
+                        f"{total_recon/denom:.6f}",
+                        f"{total_kl/denom:.6f}",
+                        f"{total_metric/denom:.6f}",
+                        f"{total_adv/denom:.6f}",
+                        f"{val_recon_mean:.6f}",
+                    ])
 
                 if cfg.save_every > 0 and ((epoch + 1) % cfg.save_every == 0):
                     save_vae_checkpoint(
