@@ -498,6 +498,7 @@ def train_vae(cfg: VAETrainConfig) -> str:
                             batch_size=cfg.decoder_init_batch_size,
                             num_workers=cfg.decoder_init_num_workers,
                             device=None,
+                            require_integer=(cfg.batch_correction_method == "none"),
                         )
                         mean_x = torch.clamp(
                             mean_x,
@@ -857,3 +858,7 @@ def main() -> None:
     )
     args = ap.parse_args()
     run_vae_training_from_config(args.config)
+
+
+if __name__ == "__main__":
+    main()

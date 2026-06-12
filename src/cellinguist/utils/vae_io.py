@@ -178,6 +178,7 @@ def estimate_gene_means(
     num_workers: int = 0,
     pin_memory: bool = False,
     device: Optional[torch.device] = None,
+    require_integer: bool = True,
 ) -> torch.Tensor:
     """
     Estimate per-gene mean counts from up to `max_cells` cells of a dataset.
@@ -236,16 +237,14 @@ def estimate_gene_means(
             mn = float(x.min().item())
             raise ValueError(f"Negative values found in x_expr (min={mn}). ZINB expects non-negative counts.")
 
-        # Optional strict integer-valued check (comment out if you intentionally allow non-integer)
-        # This is very useful for catching accidental log-normalized input.
-        if not torch.allclose(x, torch.round(x)):
-            # show a few fractional values
+        if require_integer and not torch.allclose(x, torch.round(x)):
             frac = x - torch.round(x)
             idx = torch.nonzero(frac != 0, as_tuple=False)
             example = x[idx[0, 0], idx[0, 1]].item() if idx.numel() > 0 else None
             raise ValueError(
                 "Non-integer values detected in x_expr during mean estimation "
-                f"(example={example}). Are you accidentally using normalized/log data instead of counts?"
+                f"(example={example}). Are you accidentally using normalized/log data instead of counts? "
+                "If batch_correction_method is active, pass require_integer=False."
             )
 
         x = x.float()
