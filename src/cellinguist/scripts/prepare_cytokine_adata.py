@@ -27,10 +27,21 @@ NA_LABEL = "NA"
 def sanitize_col(name: str) -> str:
     """Convert a cytokine display name to a safe pandas/YAML column name."""
     name = (
-        name.replace("β", "beta")
-        .replace("α", "alpha")
+        name.replace("α", "alpha")
+        .replace("β", "beta")
         .replace("γ", "gamma")
         .replace("δ", "delta")
+        .replace("ε", "epsilon")
+        .replace("ζ", "zeta")
+        .replace("η", "eta")
+        .replace("θ", "theta")
+        .replace("κ", "kappa")
+        .replace("λ", "lambda")
+        .replace("μ", "mu")
+        .replace("ρ", "rho")
+        .replace("σ", "sigma")
+        .replace("τ", "tau")
+        .replace("ω", "omega")
     )
     name = re.sub(r"[^A-Za-z0-9_]", "_", name)
     name = re.sub(r"_+", "_", name)
