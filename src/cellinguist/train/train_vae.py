@@ -931,3 +931,7 @@ def main() -> None:
     )
     args = ap.parse_args()
     run_vae_training_from_config(args.config)
+
+
+if __name__ == "__main__":
+    main()
