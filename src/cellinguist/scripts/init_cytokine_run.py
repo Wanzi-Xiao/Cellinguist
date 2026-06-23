@@ -3,19 +3,6 @@ Initialize a new cytokine experiment run directory.
 
 Creates the full directory scaffold and all sbatch/config files following
 the project's standard experiment layout (run_XXX_description_YYMMDD/).
-
-Usage:
-    python -m cellinguist.scripts.init_cytokine_run \\
-        --runs-dir    /ix1/acillo/wax11/21_cellinguist_260312/02_transformer_runs \\
-        --raw-adata   /ix1/acillo/wax11/21_cellinguist_260312/01_input/cytokine_dict_ser_sub_full_genes_ad_251118.h5ad \\
-        --cellinguist-dir /path/to/Cellinguist \\
-        --conda-env   pytorch_250107 \\
-        [--run-num 004]
-        [--description full_genes_cytokine]
-
-After running, submit everything with:
-    cd {runs_dir}/run_004_full_genes_cytokine_YYMMDD
-    bash scripts/run_all.sh
 """
 from __future__ import annotations
 

@@ -705,9 +705,15 @@ def train_vae(cfg: VAETrainConfig) -> str:
                     f"metric={runin_metric/denom:.4f}"
                 )
 
+        if is_main:
+            print("[VAE] Entering main training loop", flush=True)
+
         for epoch in range(start_epoch, cfg.epochs):
             if sampler is not None:
                 sampler.set_epoch(epoch)
+
+            if is_main:
+                print(f"[VAE] Starting epoch {epoch + 1}/{cfg.epochs}", flush=True)
 
             total = 0.0
             total_recon = 0.0
@@ -717,6 +723,8 @@ def train_vae(cfg: VAETrainConfig) -> str:
             nb = 0
 
             for batch in dl:
+                if nb == 0 and is_main:
+                    print(f"[VAE] Epoch {epoch + 1}: first batch loaded from DataLoader", flush=True)
                 x = batch["x_expr"].to(device, non_blocking=True)
                 libsize = batch.get("libsize", None)
                 if libsize is None:
@@ -738,6 +746,9 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 if token_gene_mask is not None:
                     token_gene_mask = token_gene_mask.to(device, non_blocking=True)
 
+                if nb == 0 and is_main:
+                    print(f"[VAE] Epoch {epoch + 1}: first batch on device", flush=True)
+
                 recon_out, mu_z, logvar_z = model(
                     x,
                     batch_idx,
@@ -747,6 +758,9 @@ def train_vae(cfg: VAETrainConfig) -> str:
                     token_gene_mask=token_gene_mask,
                 )
                 mu, theta, pi = recon_out
+
+                if nb == 0 and is_main:
+                    print(f"[VAE] Epoch {epoch + 1}: first forward pass done", flush=True)
 
                 recon = zinb_negative_log_likelihood(x, mu, theta, pi, reduction="mean")
                 kl = kl_divergence_normal(mu_z, logvar_z, reduction="mean")
@@ -782,6 +796,9 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 optimizer.step()
+
+                if nb == 0 and is_main:
+                    print(f"[VAE] Epoch {epoch + 1}: first optimizer step done", flush=True)
 
                 total += float(loss.item())
                 total_recon += float(recon.item())
