@@ -1009,8 +1009,21 @@ class SingleCellVAEDataset(Dataset):
     def __len__(self) -> int:
         return self.n_cells
 
+    _debug_getitem_count: int = 0
+
     def __getitem__(self, idx: int):
+        import time as _time
+        _dbg = SingleCellVAEDataset._debug_getitem_count < 3
+        if _dbg:
+            SingleCellVAEDataset._debug_getitem_count += 1
+            _t0 = _time.perf_counter()
+            print(f"[debug] getitem start idx={idx}", flush=True)
+
         x_raw = self._get_row(idx, apply_transform=False)
+
+        if _dbg:
+            print(f"[debug] row loaded  {_time.perf_counter()-_t0:.3f}s", flush=True)
+
         x = torch.from_numpy(
             np.log1p(x_raw) if self.transform == "log1p" else x_raw
         )
@@ -1026,8 +1039,14 @@ class SingleCellVAEDataset(Dataset):
             out["perturb_vec"] = torch.from_numpy(self._perturb_matrix[idx])
         if self._token_cache_shards:
             out["token_gene_idx"] = torch.from_numpy(self._get_cached_token_gene_indices(idx))
+            if _dbg:
+                print(f"[debug] token cache {_time.perf_counter()-_t0:.3f}s", flush=True)
         elif self._token_gene_indices is not None:
             out["token_gene_idx"] = torch.from_numpy(self._token_gene_indices[idx])
+
+        if _dbg:
+            print(f"[debug] getitem done {_time.perf_counter()-_t0:.3f}s", flush=True)
+
         return out
 
     def get_perturb_matrix(self) -> Optional[np.ndarray]:

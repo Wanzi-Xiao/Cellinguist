@@ -164,6 +164,7 @@ class VAETrainConfig:
     loss_csv_path: str = ""
     resume_from: Optional[str] = None
     save_every: int = 1
+    debug_steps: int = 0
 
     decoder_theta_init: float = 5.0          # initial theta (dispersion), gene-wise
     decoder_pi_init: float = 0.9             # initial dropout prob pi (ZI prob)

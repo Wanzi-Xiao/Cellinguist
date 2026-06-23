@@ -527,6 +527,15 @@ def train_vae(cfg: VAETrainConfig) -> str:
         )
         _log(rank, f"dataloader ready: batch_size={cfg.batch_size} num_workers={effective_num_workers}")
 
+        if is_main:
+            import time as _time
+            print("[VAE] DEBUG: fetching first batch from DataLoader...", flush=True)
+            _t0 = _time.perf_counter()
+            _probe = next(iter(dl))
+            print(f"[VAE] DEBUG: first batch fetched in {_time.perf_counter() - _t0:.2f}s  "
+                  f"keys={list(_probe.keys())}", flush=True)
+            del _probe
+
         val_dl = None
         if val_dataset is not None:
             val_dl = DataLoader(
@@ -722,7 +731,12 @@ def train_vae(cfg: VAETrainConfig) -> str:
             total_adv = 0.0
             nb = 0
 
+            import time as _time
+            _DEBUG_STEPS = cfg.debug_steps
+            _probe_t0 = _time.perf_counter()
+
             for batch in dl:
+                _step_start = _time.perf_counter()
                 if nb == 0 and is_main:
                     print(f"[VAE] Epoch {epoch + 1}: first batch loaded from DataLoader", flush=True)
                 x = batch["x_expr"].to(device, non_blocking=True)
@@ -800,12 +814,34 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 if nb == 0 and is_main:
                     print(f"[VAE] Epoch {epoch + 1}: first optimizer step done", flush=True)
 
+                if is_main and _DEBUG_STEPS > 0:
+                    torch.cuda.synchronize()
+                    _elapsed = _time.perf_counter() - _step_start
+                    _gpu_mem = torch.cuda.max_memory_allocated() / 1024**3
+                    print(
+                        f"[VAE] step={nb} time={_elapsed:.2f}s "
+                        f"gpu_mem={_gpu_mem:.2f}GB",
+                        flush=True,
+                    )
+
                 total += float(loss.item())
                 total_recon += float(recon.item())
                 total_kl += float(kl.item())
                 total_metric += float(metric.item())
                 total_adv += float(adv.item())
                 nb += 1
+
+                if _DEBUG_STEPS > 0 and nb >= _DEBUG_STEPS:
+                    if is_main:
+                        n_batches_epoch = len(dl)
+                        est_epoch_s = (_time.perf_counter() - _probe_t0) / nb * n_batches_epoch
+                        print(
+                            f"[VAE] DEBUG probe done: {nb} steps avg={est_epoch_s/n_batches_epoch:.2f}s/step, "
+                            f"est. epoch={est_epoch_s/60:.1f} min "
+                            f"({n_batches_epoch} batches total)",
+                            flush=True,
+                        )
+                    break
 
             if is_ddp:
                 loss_stats = torch.tensor(
