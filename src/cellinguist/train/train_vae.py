@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime
 import os
@@ -423,6 +424,7 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 token_mlp_layers=cfg.token_mlp_layers,
                 max_tokens_per_cell=cfg.max_tokens_per_cell,
                 min_expr_for_token=cfg.min_expr_for_token,
+                activation_checkpointing=cfg.activation_checkpointing,
             )
         decoder = ZINBExpressionDecoder(
             n_genes=n_genes,
@@ -618,6 +620,13 @@ def train_vae(cfg: VAETrainConfig) -> str:
         model.train()
         _log(rank, f"training loop start: epochs={cfg.epochs} start_epoch={start_epoch}")
 
+        grad_accum = max(1, int(cfg.grad_accum_steps))
+        _use_amp = cfg.use_amp and device.type == "cuda"
+        if is_main and grad_accum > 1:
+            print(f"[VAE] grad_accum_steps={grad_accum}  effective_batch={cfg.batch_size * grad_accum}", flush=True)
+        if is_main and _use_amp:
+            print("[VAE] mixed precision: bf16 autocast enabled", flush=True)
+
         if start_epoch == 0 and cfg.runin_batches > 0:
             if sampler is not None:
                 sampler.set_epoch(0)
@@ -657,36 +666,40 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 if token_gene_mask is not None:
                     token_gene_mask = token_gene_mask.to(device, non_blocking=True)
 
-                recon_out, mu_z, logvar_z = model(
-                    x,
-                    batch_idx,
-                    libsize=libsize,
-                    perturb_vec=perturb_vec,
-                    token_gene_idx=token_gene_idx,
-                    token_gene_mask=token_gene_mask,
-                )
-                mu, theta, pi = recon_out
-
-                recon = zinb_negative_log_likelihood(x, mu, theta, pi, reduction="mean")
-                kl = kl_divergence_normal(mu_z, logvar_z, reduction="mean")
-                metric = x.new_zeros(())
-                if cfg.use_metric_loss and cfg.runin_metric_weight > 0:
-                    metric = expression_contrastive_metric_loss(
-                        x_expr=x,
-                        z_latent=mu_z,
-                        expr_transform=cfg.metric_expr_transform,
-                        temperature=cfg.metric_temperature,
-                        k_pos=cfg.metric_k_pos,
+                _ri_is_last = (runin_nb + 1) % grad_accum == 0 or (runin_nb + 1) >= max_runin_batches
+                if runin_nb % grad_accum == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                _ri_sync = model.no_sync() if (is_ddp and not _ri_is_last) else contextlib.nullcontext()
+                with _ri_sync, (torch.autocast(device_type="cuda", dtype=torch.bfloat16) if _use_amp else contextlib.nullcontext()):
+                    recon_out, mu_z, logvar_z = model(
+                        x,
+                        batch_idx,
+                        libsize=libsize,
+                        perturb_vec=perturb_vec,
+                        token_gene_idx=token_gene_idx,
+                        token_gene_mask=token_gene_mask,
                     )
-                loss = recon + cfg.runin_kl_weight * kl + cfg.runin_metric_weight * metric
-
-                optimizer.zero_grad(set_to_none=True)
+                    mu, theta, pi = recon_out
+                    recon = zinb_negative_log_likelihood(x, mu, theta, pi, reduction="mean")
+                    kl = kl_divergence_normal(mu_z, logvar_z, reduction="mean")
+                    metric = x.new_zeros(())
+                    if cfg.use_metric_loss and cfg.runin_metric_weight > 0:
+                        metric = expression_contrastive_metric_loss(
+                            x_expr=x,
+                            z_latent=mu_z,
+                            expr_transform=cfg.metric_expr_transform,
+                            temperature=cfg.metric_temperature,
+                            k_pos=cfg.metric_k_pos,
+                        )
+                    loss_unscaled = recon + cfg.runin_kl_weight * kl + cfg.runin_metric_weight * metric
+                    loss = loss_unscaled / grad_accum
                 loss.backward()
-                if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
-                optimizer.step()
+                if _ri_is_last:
+                    if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
+                    optimizer.step()
 
-                runin_total += float(loss.item())
+                runin_total += float(loss_unscaled.item())
                 runin_recon += float(recon.item())
                 runin_kl += float(kl.item())
                 runin_metric += float(metric.item())
@@ -717,6 +730,7 @@ def train_vae(cfg: VAETrainConfig) -> str:
         if is_main:
             print("[VAE] Entering main training loop", flush=True)
 
+        _accum_counter = 0
         for epoch in range(start_epoch, cfg.epochs):
             if sampler is not None:
                 sampler.set_epoch(epoch)
@@ -763,53 +777,61 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 if nb == 0 and is_main:
                     print(f"[VAE] Epoch {epoch + 1}: first batch on device", flush=True)
 
-                recon_out, mu_z, logvar_z = model(
-                    x,
-                    batch_idx,
-                    libsize=libsize,
-                    perturb_vec=perturb_vec,
-                    token_gene_idx=token_gene_idx,
-                    token_gene_mask=token_gene_mask,
-                )
-                mu, theta, pi = recon_out
-
-                if nb == 0 and is_main:
-                    print(f"[VAE] Epoch {epoch + 1}: first forward pass done", flush=True)
-
-                recon = zinb_negative_log_likelihood(x, mu, theta, pi, reduction="mean")
-                kl = kl_divergence_normal(mu_z, logvar_z, reduction="mean")
-                metric = x.new_zeros(())
-                if cfg.use_metric_loss and cfg.metric_loss_weight > 0:
-                    metric = expression_contrastive_metric_loss(
-                        x_expr=x,
-                        z_latent=mu_z,
-                        expr_transform=cfg.metric_expr_transform,
-                        temperature=cfg.metric_temperature,
-                        k_pos=cfg.metric_k_pos,
+                _is_update_step = (_accum_counter + 1) % grad_accum == 0
+                if _accum_counter == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                _sync_ctx = model.no_sync() if (is_ddp and not _is_update_step) else contextlib.nullcontext()
+                with _sync_ctx, (torch.autocast(device_type="cuda", dtype=torch.bfloat16) if _use_amp else contextlib.nullcontext()):
+                    recon_out, mu_z, logvar_z = model(
+                        x,
+                        batch_idx,
+                        libsize=libsize,
+                        perturb_vec=perturb_vec,
+                        token_gene_idx=token_gene_idx,
+                        token_gene_mask=token_gene_mask,
                     )
-                adv = x.new_zeros(())
-                if (
-                    use_adv
-                    and cfg.batch_invariance_weight > 0
-                    and batch_idx is not None
-                    and epoch >= cfg.batch_invariance_warmup_epochs
-                ):
-                    logits = raw_model.predict_batch_logits(
-                        mu_z, grl_lambda=cfg.batch_adv_grl_lambda
-                    )
-                    adv = F.cross_entropy(logits, batch_idx)
-                loss = (
-                    recon
-                    + cfg.kl_weight * kl
-                    + cfg.metric_loss_weight * metric
-                    + cfg.batch_invariance_weight * adv
-                )
+                    mu, theta, pi = recon_out
 
-                optimizer.zero_grad(set_to_none=True)
+                    if nb == 0 and is_main:
+                        print(f"[VAE] Epoch {epoch + 1}: first forward pass done", flush=True)
+
+                    recon = zinb_negative_log_likelihood(x, mu, theta, pi, reduction="mean")
+                    kl = kl_divergence_normal(mu_z, logvar_z, reduction="mean")
+                    metric = x.new_zeros(())
+                    if cfg.use_metric_loss and cfg.metric_loss_weight > 0:
+                        metric = expression_contrastive_metric_loss(
+                            x_expr=x,
+                            z_latent=mu_z,
+                            expr_transform=cfg.metric_expr_transform,
+                            temperature=cfg.metric_temperature,
+                            k_pos=cfg.metric_k_pos,
+                        )
+                    adv = x.new_zeros(())
+                    if (
+                        use_adv
+                        and cfg.batch_invariance_weight > 0
+                        and batch_idx is not None
+                        and epoch >= cfg.batch_invariance_warmup_epochs
+                    ):
+                        logits = raw_model.predict_batch_logits(
+                            mu_z, grl_lambda=cfg.batch_adv_grl_lambda
+                        )
+                        adv = F.cross_entropy(logits, batch_idx)
+                    loss_unscaled = (
+                        recon
+                        + cfg.kl_weight * kl
+                        + cfg.metric_loss_weight * metric
+                        + cfg.batch_invariance_weight * adv
+                    )
+                    loss = loss_unscaled / grad_accum
                 loss.backward()
-                if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
-                optimizer.step()
+                _accum_counter += 1
+
+                if _is_update_step:
+                    if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
+                    optimizer.step()
+                    _accum_counter = 0
 
                 if nb == 0 and is_main:
                     print(f"[VAE] Epoch {epoch + 1}: first optimizer step done", flush=True)
@@ -824,7 +846,7 @@ def train_vae(cfg: VAETrainConfig) -> str:
                         flush=True,
                     )
 
-                total += float(loss.item())
+                total += float(loss_unscaled.item())
                 total_recon += float(recon.item())
                 total_kl += float(kl.item())
                 total_metric += float(metric.item())
@@ -832,6 +854,11 @@ def train_vae(cfg: VAETrainConfig) -> str:
                 nb += 1
 
                 if _DEBUG_STEPS > 0 and nb >= _DEBUG_STEPS:
+                    if _accum_counter > 0:
+                        if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
+                        optimizer.step()
+                        _accum_counter = 0
                     if is_main:
                         n_batches_epoch = len(dl)
                         est_epoch_s = (_time.perf_counter() - _probe_t0) / nb * n_batches_epoch
@@ -842,6 +869,13 @@ def train_vae(cfg: VAETrainConfig) -> str:
                             flush=True,
                         )
                     break
+
+            # flush any remaining accumulated gradients at end of epoch
+            if _accum_counter > 0:
+                if cfg.grad_clip_norm and cfg.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
+                optimizer.step()
+                _accum_counter = 0
 
             if is_ddp:
                 loss_stats = torch.tensor(

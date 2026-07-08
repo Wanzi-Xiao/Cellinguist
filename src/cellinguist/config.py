@@ -157,6 +157,9 @@ class VAETrainConfig:
     num_workers: int = 4
     device: str = "cuda"
     grad_clip_norm: float = 1.0
+    grad_accum_steps: int = 1
+    use_amp: bool = False
+    activation_checkpointing: bool = False
     seed: Optional[int] = 0
 
     checkpoint_dir: str = "checkpoints"

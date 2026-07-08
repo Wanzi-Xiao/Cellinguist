@@ -528,9 +528,11 @@ class TransformerCellEncoder(nn.Module):
         token_mlp_layers: int = 2,
         max_tokens_per_cell: Optional[int] = None,
         min_expr_for_token: float = 0.0,
+        activation_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.n_genes = int(n_genes)
+        self.activation_checkpointing = bool(activation_checkpointing)
         self.latent_dim = int(latent_dim)
         self.input_transform = str(input_transform)
         if self.input_transform not in {"log1p", "none"}:
@@ -761,7 +763,15 @@ class TransformerCellEncoder(nn.Module):
         return_attention: bool = False,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         if not return_attention:
-            hidden = self.transformer(tokens, src_key_padding_mask=key_padding_mask)
+            if self.activation_checkpointing:
+                from torch.utils.checkpoint import checkpoint as ckpt
+                hidden = tokens
+                for layer in self.transformer.layers:
+                    hidden = ckpt(layer, hidden, None, key_padding_mask, use_reentrant=False)
+                if self.transformer.norm is not None:
+                    hidden = self.transformer.norm(hidden)
+            else:
+                hidden = self.transformer(tokens, src_key_padding_mask=key_padding_mask)
             return hidden, None
 
         hidden = tokens
